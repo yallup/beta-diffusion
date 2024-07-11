@@ -79,9 +79,9 @@ class Model(ABC):
         Returns:
             jnp.ndarray: Samples from the posterior distribution.
         """
-        jac = kwargs.get("jac", False)
-        steps = kwargs.get("steps", 0)
-        solution = kwargs.get("solution", "none")
+        jac = kwargs.pop("jac", False)
+        steps = kwargs.pop("steps", 0)
+        solution = kwargs.pop("solution", "none")
         rng = kwargs.pop("rng", self.rng)
         # self.rng, step_rng = random.split(self.rng)
         x, j = self.reverse_process(

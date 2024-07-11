@@ -4,7 +4,7 @@ from functools import partial
 import diffrax as dfx
 import jax.numpy as jnp
 import jax.random as random
-from diffrax.saveat import SaveAt
+from diffrax import SaveAt
 from jax import disable_jit, grad, jit, pmap, vjp, vmap
 
 from fusions.model import Model

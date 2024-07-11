@@ -1,19 +1,17 @@
 [tool.poetry]
 name = "fusions"
-version = "0.4.3"
+version = "0.6.0"
 description = "Diffusion meets sampling"
 authors = ["David Yallup <david.yallup@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-flax = "^0.8.2"
+flax = "^0.8.5"
 anesthetic = "^2.4.2"
 pytest = "^7.3"
 tqdm = "^4.62.0"
-torch = "^2.1.0"
-diffrax = "^0.4.0"
-distrax = "^0.1.5"
+diffrax = "^0.6.0"
 optax = "^0.2.2"
 
 
