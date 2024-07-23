@@ -31,7 +31,7 @@ d = 2
 
 prior = distrax.Normal(jnp.zeros(d), jnp.ones(d))
 rng, theta_key = jax.random.split(rng)
-true_theta = prior.sample(seed=theta_key)
+true_theta = prior.sample(seed=theta_key) * 5
 
 
 def target(theta):
@@ -93,7 +93,7 @@ n_steps = 100
 x, j = mapping.sample_posterior(2000, jac=True, solution="exact", steps=n_steps)
 
 time_steps_to_plot = [0, 50, 75, 95, 100]
-f, a = ns.make_2d_axes([0, 1])
+f, a = ns.make_2d_axes([0, 1], figsize=(10, 6))
 for i in time_steps_to_plot:
     ns.MCMCSamples(x[:, i, :]).plot_2d(a, label=f"t={i/n_steps:.2f}")
 
