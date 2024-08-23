@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 import optax
-from clax import ClassifierSamples
+from clax import Classifier, ClassifierSamples
 from flax import linen as nn
 from flax import traverse_util
 from flax.training.train_state import TrainState
@@ -16,7 +16,8 @@ from optax import tree_utils as otu
 from scipy.stats import multivariate_normal
 from tqdm import tqdm
 
-from fusions.network import Classifier, ScoreApprox
+# from fusions.network import Classifier, ScoreApprox
+from fusions.network import ScoreApprox
 from fusions.optimal_transport import FullOT, NullOT, PriorExtendedNullOT
 
 # from clax import ClassifierSamples
@@ -344,7 +345,21 @@ class Model(ABC):
             n_epochs (int): Number of training epochs. Defaults to 1000.
             lr (float): Learning rate. Defaults to 1e-3.
         """
-        self.calibrator = ClassifierSamples()
-        self.calibrator.train(samples_a, samples_b, **kwargs)
-        # self._predict_weight = lambda x: self.calibrator.predict(x).squeeze()
-        # self._guidance_score = jax.grad(self._predict_weight,argnums=0)
+        self.calibrator = Classifier()
+
+        labels = jnp.concatenate(
+            [jnp.ones(samples_a.shape[0]), jnp.zeros(samples_b.shape[0])]
+        )
+        xs = jnp.concatenate([samples_a, samples_b])
+
+        self.calibrator.fit(xs, labels, **kwargs)
+        self._calibrate_predict = lambda x: nn.sigmoid(self.calibrator.predict(x))
+        self._calibrator_score = lambda x: jax.grad(
+            lambda x: self.calibrator.loss(
+                self.calibrator.state.params,
+                self.calibrator.state.batch_stats,
+                x,
+                jnp.zeros(x.shape[0]),
+                self.rng,
+            )[0]
+        )(x)

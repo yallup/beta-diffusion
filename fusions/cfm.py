@@ -53,6 +53,7 @@ class CFM(Model):
             xi, initial = conditions
             # overload_score = lambda x: score(x, jnp.atleast_1d(ti))
             f, vjp_f = vjp(score, xi, jnp.atleast_1d(ti))
+            # f, vjp_f = vjp(guide_score, xi, jnp.atleast_1d(ti))
             # f, vjp_f = vjp(overload_score, xi)
             size = xi.shape[0]
             eye = jnp.eye(size)
@@ -85,18 +86,113 @@ class CFM(Model):
             # solver = dfx.Dopri8()
             # solver = dfx.Tsit5()
 
-            with disable_jit():
-                sol = dfx.diffeqsolve(
-                    term,
-                    solver,
-                    t0,
-                    t,
-                    dt0,
-                    conditions,
-                    args=eps,
-                    saveat=SaveAt(t1=True, ts=ts),
-                    stepsize_controller=dfx.PIDController(1e-4, 1e-4),
-                )
+            # with disable_jit():
+            sol = dfx.diffeqsolve(
+                term,
+                solver,
+                t0,
+                t,
+                dt0,
+                conditions,
+                args=eps,
+                saveat=SaveAt(t1=True, ts=ts),
+                stepsize_controller=dfx.PIDController(1e-4, 1e-4),
+            )
+            return sol.ys
+
+        # batch_rngs = random.split(rng, initial_samples.shape[0])
+        eps = random.normal(rng, initial_samples.shape)
+        # f(initial_samples[0], eps[0])
+        # solver_exact(0.0, (initial_samples[0], initial_samples[0]), eps[0])
+        yt, jt = vmap(f)(initial_samples, eps)
+        return yt.squeeze(), jt.squeeze()
+
+    @partial(jit, static_argnums=[0, 2, 3, 5, 6])
+    def guided_reverse_process(
+        self,
+        initial_samples,
+        score,
+        guidance_score,
+        rng,
+        steps=0,
+        solution="none",
+        t0=0.0,
+        t=1.0,
+        dt0=1e-3,
+    ):
+        """Run the reverse ODE.
+
+        Args:
+            initial_samples (jnp.ndarray): Samples to run the model on.
+            score (callable): Score function.
+            rng: Jax Random number generator key.
+
+        Keyword Args:
+            steps (int, optional) : Number of time steps to save in addition to t=1. Defaults to 0.
+            solution (str, optional): Method to use for the jacobian. Defaults to "exact".
+                        one of "exact", "none", "approx".
+
+        Returns:
+            Tuple[jnp.ndarray, jnp.ndarray]: Samples from the posterior distribution. and the history of the process.
+        """
+        ts = jnp.linspace(t0, t, steps)
+
+        def solver_none(ti, conditions, args):
+            xi, null_jac = conditions
+            return score(xi, jnp.atleast_1d(ti)), null_jac
+
+        def guide_score(x, t):
+            return -guidance_score(x) + score(x, t)
+
+        def solver_exact(ti, conditions, args):
+            xi, initial = conditions
+            # overload_score = lambda x: score(x, jnp.atleast_1d(ti))
+            f, vjp_f = vjp(score, xi, jnp.atleast_1d(ti))
+            # f, vjp_f = vjp(guide_score, xi, jnp.atleast_1d(ti))
+            # f, vjp_f = vjp(overload_score, xi)
+            size = xi.shape[0]
+            eye = jnp.eye(size)
+            (dfdx, _) = vmap(vjp_f)(eye)
+            logp = jnp.trace(dfdx)
+            return f, logp
+
+        def solver_approx(ti, conditions, args):
+            eps = args
+            xi, _ = conditions
+            eps = random.normal(rng, xi.shape)
+            f, vjp_f = vjp(score, xi, jnp.atleast_1d(ti))
+            eps_dfdx, _ = vjp_f(eps)
+            logp = jnp.sum(eps_dfdx * eps)
+            return f, logp
+
+        def f(x, eps):
+            # jacobian = jnp.zeros(x.shape[0])
+            jacobian = 0.0
+            conditions = (x, jacobian)
+            if solution == "exact":
+                term = dfx.ODETerm(solver_exact)
+            elif solution == "approx":
+                term = dfx.ODETerm(solver_approx)
+            else:
+                term = dfx.ODETerm(solver_none)
+            # term = dfx.ODETerm(score_args_exact)
+            # solver = dfx.Heun()
+            solver = dfx.Dopri5()
+            # solver = dfx.Dopri8()
+            # solver = dfx.Tsit5()
+
+            # with disable_jit():
+            sol = dfx.diffeqsolve(
+                term,
+                solver,
+                t0,
+                t,
+                dt0,
+                conditions,
+                args=eps,
+                saveat=SaveAt(t1=True, ts=ts),
+                stepsize_controller=dfx.PIDController(1e-4, 1e-4),
+            )
             return sol.ys
 
         # batch_rngs = random.split(rng, initial_samples.shape[0])
@@ -130,7 +226,7 @@ class CFM(Model):
         # batch = batch[idx[0]]
         # batch_prior = batch_prior[idx[1]]
         t = random.uniform(step_rng, (N_batch, 1))
-        t = jnp.power(t, 2.0 / 3.0)
+        t = jnp.power(t, 1.0 / 2.0)
         x0 = batch_prior
         x1 = batch
         noise = random.normal(step_rng, (N_batch, self.ndims))

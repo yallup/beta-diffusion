@@ -38,9 +38,33 @@ class likelihood(object):
         )
 
 
-from distrax import Normal, Uniform
+from lsbi.model import LinearModel
+
+d = 100
+t = dims
+np.random.seed(1)
+
+# M is the linear model matrix, C is the data covariance (error bars on data), this model encodes a data generating process of
+# D = M @ theta + N(0, C)
+# lm = LinearModel(
+#     M=np.random.randn(d, t),
+#     C=np.eye(d),
+# )
+# true_theta, true_data = np.split(lm.joint().rvs(), [t])
+
+# class likelihood(object):
+#     def logpdf(self, x):
+#         return lm.likelihood(x).logpdf(true_data)
+
+#     def __call__(self, x):
+#         return lm.likelihood(x).logpdf(true_data)
+
+from distrax import MultivariateNormalDiag, Normal, Uniform
 
 prior = Uniform(low=-5.0 * np.ones(dims), high=5.0 * np.ones(dims))
+# prior = MultivariateNormalDiag(
+#             loc=np.zeros(dims), scale_diag=np.ones(dims)
+#         )
 # class prior(object):
 #     dim: int = dims
 
@@ -66,13 +90,14 @@ diffuser.settings.prior_boost = 2
 diffuser.settings.eps = 1e-2
 diffuser.settings.batch_size = 500
 diffuser.settings.restart = True
-diffuser.settings.lr = 5e-3
+diffuser.settings.lr = 1e-2
 diffuser.score_model = network
 import jax
 
 diffuser.rng = jax.random.PRNGKey(10)
 # diffuser.run(steps=10, n=500)
 diffuser.run()
+# print(lm.evidence().logpdf(true_data))
 samples = diffuser.samples()
 diffuser.write("diffusion")
 # print(f"analytic: {logz:.2f}")

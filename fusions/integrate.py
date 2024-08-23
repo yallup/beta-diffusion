@@ -79,7 +79,7 @@ class Settings:
     """
 
     n: int = 500
-    target_eff: float = 0.1
+    target_eff: float = 1.0
     steps: int = 20
     prior_boost: int = 5
     eps: float = 1e-3
@@ -157,6 +157,13 @@ class Integrator(ABC):
             # pi0 = jnp.sum(pi0, axis=-1)
 
             self.rng, step_rng = random.split(self.rng)
+            # x1, j = dist.guided_reverse_process(
+            #     x0,
+            #     dist._predict,
+            #     dist._calibrator_score,
+            #     step_rng,
+            #     solution="exact",
+            # )
             x1, j = dist.reverse_process(
                 x0,
                 dist._predict,
@@ -166,32 +173,38 @@ class Integrator(ABC):
             logl = self.likelihood.logpdf(x1) * beta
             # mask = logl > logl_birth
             pi1 = jnp.sum(self.prior.log_prob(x1), axis=-1)
+            # pi1 = self.prior.log_prob(x1)
             # pi = j.squeeze() - pi0 - pi1
-            pi = j - pi0 + pi1
+            pi = pi1 - pi0 + j
 
-            x = x1[~jnp.isinf(pi)]
-            w = pi[~jnp.isinf(pi)]
+            mask = ~jnp.isinf(pi)  # & (dist._calibrate_predict(x1).squeeze() < 0.5)
+
+            x = x1[mask]
+            w = pi[mask]
 
         else:
             self.rng, sample_key = random.split(self.rng)
             x, pi = dist._sample_n_and_log_prob(sample_key, n)
-            w = jnp.sum(pi, axis=-1)
+            w = jnp.ones(n)
+            # w = jnp.sum(jnp.atleast_2d(pi), axis=-1)
+            # w = pi
 
         logl = self.likelihood.logpdf(x)
         l_idx = logl > logl_birth
         x = x[l_idx]
         w = w[l_idx]
         logl = logl[l_idx]
-        self.rng, compress_key = random.split(self.rng)
-        idx = jnp.log(Uniform()._sample_n(compress_key, w.shape[0])) <= w - w.max()
-        # idx = compress_weights(w.flatten(), ncompress="equal")
-        # idx = np.asarray(idx, dtype=bool)
+
+        # self.rng, compress_key = random.split(self.rng)
+        # idx = jnp.log(Uniform()._sample_n(compress_key, w.shape[0])) <= w - w.max()
+        idx = compress_weights(jnp.exp(w.flatten()), ncompress="equal")
+        idx = np.asarray(idx, dtype=bool)
         logl = self.likelihood.logpdf(x) * beta
         self.stats.nlike += l_idx.shape[0]
         logl_birth = np.ones_like(logl) * logl_birth
         points = [
             Point(
-                x[idx][i],
+                np.asarray(x[idx][i]),
                 logl[idx][i],
                 logl_birth[idx][i],
             )
@@ -392,13 +405,13 @@ class NestedDiffusion(Integrator):
             self.live = live
             self.dist = self.train_diffuser(self.dist, live)
             x = self.dist.rvs(len(live))
-            self.dist.calibrate(
-                x,
-                jnp.asarray([xi.x for xi in live]),
-                batch_size=self.settings.batch_size,
-                lr=self.settings.lr,
-                epochs=int(50 * self.settings.epoch_factor),
-            )
+            # self.dist.calibrate(
+            #     x,
+            #     jnp.asarray([xi.x for xi in live]),
+            #     batch_size=self.settings.batch_size,
+            #     lr=self.settings.lr,
+            #     epochs=int(50 * self.settings.epoch_factor),
+            # )
 
             self.trace.losses[step] = self.dist.trace.losses
             self.trace.lr[step] = self.dist.trace.lr
