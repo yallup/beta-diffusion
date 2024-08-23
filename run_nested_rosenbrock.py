@@ -57,11 +57,11 @@ model = CFM
 diffuser = NestedDiffusion(prior=prior(), likelihood=likelihood(), model=model)
 diffuser.settings.target_eff = 1.0
 diffuser.settings.epoch_factor = 5
-diffuser.settings.n = 2000
-diffuser.settings.noise = 1e-5
+diffuser.settings.n = 1000
+diffuser.settings.noise = 1e-3
 diffuser.settings.prior_boost = 2
 diffuser.settings.eps = 1e-2
-diffuser.settings.batch_size = diffuser.settings.n
+diffuser.settings.batch_size = 256
 diffuser.settings.restart = False
 diffuser.settings.lr = 1e-2
 diffuser.score_model = network

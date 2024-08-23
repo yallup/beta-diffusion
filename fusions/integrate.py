@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from anesthetic import MCMCSamples, NestedSamples, make_2d_axes, read_chains
 from anesthetic.utils import compress_weights, neff
+from jax import random
 
 # from anesthetic.read.hdf import read_hdf, write_hdf
 from scipy.special import logsumexp
@@ -24,7 +25,6 @@ from tqdm import tqdm
 
 from fusions.model import Model
 from fusions.utils import ellipse, unit_hyperball, unit_hypercube
-from jax import random
 
 
 @dataclass
@@ -83,7 +83,7 @@ class Settings:
     eps: float = 1e-3
     batch_size: float = 0.25
     epoch_factor: int = 1
-    restart: bool = False
+    restart: bool = True
     noise: float = 1e-3
     resume: bool = False
     dirname: str = "fusions_samples"
@@ -140,6 +140,8 @@ class Integrator(ABC):
         #     np.zeros(prior.dim), np.eye(prior.dim)
         # )
         self.latent = multivariate_normal(np.zeros(prior.dim), np.eye(prior.dim))
+        # self.latent = unit_hyperball(prior.dim)
+        # self.latent = self.prior
 
     def sample(self, n, dist, logl_birth=0.0, beta=1.0):
         if isinstance(dist, Model):
@@ -153,11 +155,14 @@ class Integrator(ABC):
             x = x[mask]
             w = np.exp(j[mask] - latent_pi[mask])  # - calibrate_logprob.squeeze()[mask]
             latent_x = latent_x[mask]
+            # w = np.exp(j - latent_pi)
         else:
             x = np.asarray(dist.rvs(n))
             w = np.ones(n)
             latent_x = x
         idx = compress_weights(w.flatten(), ncompress="equal")
+        logging.log(logging.INFO, f"Compressed to {idx.sum()} points")
+
         idx = np.asarray(idx, dtype=bool)
         logl = self.likelihood.logpdf(x) * beta
         self.stats.nlike += n
@@ -236,7 +241,7 @@ class NestedDiffusion(Integrator):
     def train_diffuser(self, dist, points, prior_samples=None):
         dist.train(
             np.asarray([yi.x for yi in points]),
-            n_epochs=int(len(points) * self.settings.epoch_factor),
+            epochs=int(50 * self.settings.epoch_factor),
             # batch_size=int(len(points) * self.settings.batch_size),
             batch_size=self.settings.batch_size,
             lr=self.settings.lr,

@@ -6,16 +6,20 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 import optax
+from clax import ClassifierSamples
 from flax import linen as nn
 from flax import traverse_util
+from flax.training.train_state import TrainState
 from jax import jit, tree_map
+from jaxopt import LBFGS
 from optax import tree_utils as otu
 from scipy.stats import multivariate_normal
 from tqdm import tqdm
 
-from fusions.network import Classifier, ScoreApprox, TrainState
-from fusions.optimal_transport import NullOT, PriorExtendedNullOT
+from fusions.network import Classifier, ScoreApprox
+from fusions.optimal_transport import FullOT, NullOT, PriorExtendedNullOT
 
+# from clax import ClassifierSamples
 # from optax.contrib import reduce_on_plateau
 
 
@@ -44,6 +48,7 @@ class Model(ABC):
 
         # self.map = kwargs.get("map", NullOT)
         self.map = PriorExtendedNullOT
+        # self.map = FullOT
 
         self.state = None
         self.calibrate_state = None
@@ -141,16 +146,19 @@ class Model(ABC):
     def _train(self, data, **kwargs):
         """Internal wrapping of training loop."""
         self.trace = Trace()
-        batch_size = kwargs.get("batch_size", 256)
-        n_epochs = kwargs.get("n_epochs", data.shape[0])
+        # batch_size = kwargs.get("batch_size", 256)
+        # n_epochs = kwargs.get("n_epochs", data.shape[0])
         prior_samples = kwargs.get("prior_samples", None)
+        batch_size = kwargs.get("batch_size")
+        batches_per_epoch = kwargs.pop("batches_per_epoch")
+        epochs = kwargs.get("epochs", 10)
 
         @jit
         def update_step(state, batch, batch_prior, rng):
-            (val, updates), grads = jax.value_and_grad(self.loss, has_aux=True)(
+            val, grads = jax.value_and_grad(self.loss)(
                 state.params, batch, batch_prior, rng
             )
-            state = state.apply_gradients(grads=grads, value=val)
+            state = state.apply_gradients(grads=grads)  # , scale_value=val)
             # state = state.replace(batch_stats=updates["batch_stats"])
             # state = state.replace(value=val)
             return val, state
@@ -158,90 +166,30 @@ class Model(ABC):
         train_size = data.shape[0]
         if prior_samples is None:
             prior_samples = jnp.array(
-                self.prior.rvs(train_size * 100).reshape(-1, self.ndims)
+                self.prior.rvs(train_size).reshape(-1, self.ndims)
+                # self.prior.rvs(train_size * 100).reshape(-1, self.ndims)
             )
         batch_size = min(batch_size, train_size)
 
         losses = []
         map = self.map(prior_samples, data)
-        tepochs = tqdm(range(n_epochs))
+        tepochs = tqdm(range(epochs))
         for k in tepochs:
-            self.rng, step_rng = random.split(self.rng)
-            perm_prior, perm = map.sample(batch_size)
-            batch = data[perm, :]
-            batch_prior = prior_samples[perm_prior, :]
-            loss, self.state = update_step(self.state, batch, batch_prior, step_rng)
-            # self.trace.losses.append(loss)
-            losses.append(loss)
-
-            # losses.append(loss)
-            if (k + 1) % 10 == 0:
-                ma = jnp.mean(jnp.array(losses[-10:]))
-                self.trace.losses.append(ma)
-                tepochs.set_postfix(loss=ma)
-                self.trace.iteration += 1
-                lr_scale = otu.tree_get(self.state, "scale")
-                self.trace.lr.append(lr_scale)
-                # if lr_scale < 1e-1:
-                #     break
-
-    def _train_calibrator(self, data_a, data_b, **kwargs):
-        """Internal wrapping of training loop."""
-        batch_size = kwargs.get("batch_size", 512)
-        n_epochs = kwargs.get("n_epochs", 50)
-
-        @jit
-        def update_step(state, batch, batch_labels, rng):
-            val, grads = jax.value_and_grad(self.calibrate_loss)(
-                state.params, batch, batch_labels
-            )
-            state = state.apply_gradients(grads=grads)
-            # state = state.replace(batch_stats=updates["batch_stats"])
-            return val, state
-
-        train_size = data_a.shape[0]
-
-        # if self.prior:
-        #     prior_samples = jnp.array(self.prior.rvs(train_size))
-        # else:
-        #     prior_samples = jnp.zeros_like(data)
-
-        batch_size = min(batch_size, train_size)
-        n_batches = train_size // batch_size
-        labels_a = jnp.zeros(data_a.shape[0])
-        labels_b = jnp.ones(data_b.shape[0])
-        labels = jnp.concatenate([labels_a, labels_b])
-        labels = jnp.asarray(labels, dtype=int)
-        data = jnp.concatenate([data_a, data_b])
-
-        losses = []
-        tepochs = tqdm(range(n_epochs))
-        for k in tepochs:
-            self.rng, step_rng = random.split(self.rng)
-            perm = random.permutation(step_rng, jnp.arange(data.shape[0]))
-            data = data[perm, :]
-            labels = labels[perm]
-
-            for i in range(n_batches):
+            epoch_losses = []
+            for _ in range(batches_per_epoch):
                 self.rng, step_rng = random.split(self.rng)
-                # Get the indices of the current batch
-                start = i * batch_size
-                end = min(start + batch_size, train_size)
+                perm, perm_prior = map.sample(batch_size)
+                batch = data[perm]
+                batch_label = prior_samples[perm_prior]
+                loss, self.state = update_step(self.state, batch, batch_label, step_rng)
+                epoch_losses.append(loss)
 
-                # Extract the batch from the shuffled data and labels
-                batch = data[start:end, :]
-                batch_labels = labels[start:end]
-
-                loss, self.calibrate_state = update_step(
-                    self.calibrate_state, batch, batch_labels, step_rng
-                )
-                losses.append(loss)
-
-                # losses.append(loss)
-                if (k + 1) % 10 == 0:
-                    ma = jnp.mean(jnp.array(losses[-10:]))
-                    self.trace.calibrate_losses.append(ma)
-                    tepochs.set_postfix(loss=ma)
+            epoch_summary_loss = jnp.mean(jnp.asarray(epoch_losses))
+            tepochs.set_postfix(loss="{:.2e}".format(epoch_summary_loss))
+            losses.append(epoch_summary_loss)
+            # if losses[::-1][:patience] < epoch_summary_loss:
+            #     break
+            self.trace.losses = jnp.asarray(losses)
 
     def _init_state(self, **kwargs):
         """Initialise the state of the training."""
@@ -250,106 +198,73 @@ class Model(ABC):
         dummy_t = jnp.ones((1, 1))
         self.rng, step_rng = random.split(self.rng)
         _params = self.score_model().init(step_rng, dummy_x, dummy_t)
+        optimizer = kwargs.get("optimizer", None)
+        lr = kwargs.get("lr", 1e-3)
+
         params = _params["params"]
+        # batch_stats = _params["batch_stats"]
 
-        lr = kwargs.get("lr", 1e-2)
-        base_learning_rate = lr
+        target_batches_per_epoch = kwargs.pop("target_batches_per_epoch")
+        warmup_fraction = kwargs.get("warmup_fraction", 0.05)
+        cold_fraction = kwargs.get("cold_fraction", 0.05)
+        cold_lr = kwargs.get("cold_lr", 1e-3)
+        epochs = kwargs.pop("epochs")
 
-        transition_steps = kwargs.get("transition_steps", 100)
-
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adamw(
-                optax.cosine_decay_schedule(lr, transition_steps * 10, alpha=lr * 1e-2)
+        self.schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=lr,
+            warmup_steps=int(warmup_fraction * target_batches_per_epoch * epochs + 1),
+            decay_steps=int(
+                (1 - cold_fraction) * target_batches_per_epoch * epochs + 1
             ),
-            # optax.contrib.reduce_on_plateau(
-            #     factor=0.5,
-            #     patience=transition_steps // 10,  # 10
-            #     # cooldown=transition_steps // 10,  # 10
-            #     accumulation_size=transition_steps,
-            # ),
+            end_value=lr * cold_lr,
+            exponent=1.0,
         )
+        if not optimizer:
+            optimizer = optax.chain(
+                # optax.adaptive_grad_clip(0.01),
+                # optax.contrib.schedule_free_adamw(lr, warmup_steps=transition_steps)
+                optax.adamw(self.schedule),
+                # optax.adamw(lr),
+            )
 
         if prev_params:
             _params = {}
             _params["params"] = prev_params
-            # _params["params"] = params
-            lr = 1e-3
-            # _params["batch_stats"] = stats
-            last_layer = list(_params["params"].keys())[-1]
-            optimizer = optax.chain(
-                optax.clip_by_global_norm(1.0),
-                optax.adamw(
-                    optax.cosine_decay_schedule(
-                        lr * 5, transition_steps * 10, alpha=lr * 1e-2
-                    )
-                ),
-                #     optax.contrib.reduce_on_plateau(
-                #         factor=0.5,
-                #         patience=transition_steps // 10,  # 10
-                #         # cooldown=transition_steps // 10,  # 10
-                #         accumulation_size=transition_steps,
-                #     ),
-            )
+            # # _params["params"] = params
+            # lr = 1e-3
+            # # _params["batch_stats"] = stats
+            # last_layer = list(_params["params"].keys())[-1]
+            # optimizer = optax.chain(
+            #     optax.clip_by_global_norm(1.0),
+            #     optax.adamw(
+            #         optax.cosine_decay_schedule(
+            #             lr * 5, transition_steps * 10, alpha=lr * 1e-2
+            #         )
+            #     ),
+            #     #     optax.contrib.reduce_on_plateau(
+            #     #         factor=0.5,
+            #     #         patience=transition_steps // 10,  # 10
+            #     #         # cooldown=transition_steps // 10,  # 10
+            #     #         accumulation_size=transition_steps,
+            #     #     ),
+            # )
 
         params = _params["params"]
+        # batch_stats = _params["batch_stats"]
         self.state = TrainState.create(
             apply_fn=self.score_model().apply,
             params=params,
             # batch_stats=batch_stats,
             tx=optimizer,
-            losses=[],
+            # losses=[],
             # val = 1e-1
-        )
-
-    def _init_calibrate_state(self, **kwargs):
-        dummy_x = jnp.zeros((1, self.ndims))
-
-        _params = self.classifier_model().init(self.rng, dummy_x)
-        lr = kwargs.get("lr", 1e-2)
-        optimizer = optax.adam(lr)
-        params = _params["params"]
-        # batch_stats = _params["batch_stats"]
-        transition_steps = kwargs.get("transition_steps", 100)
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adamw(
-                optax.cosine_decay_schedule(lr * 5, transition_steps * 2, alpha=lr)
-            ),
-            optax.contrib.reduce_on_plateau(
-                factor=0.5,
-                patience=transition_steps // 10,  # 10
-                # cooldown=transition_steps // 10,  # 10
-                accumulation_size=transition_steps,
-            ),
-        )
-        optimizer = optax.chain(optax.adamw(optax.cosine_decay_schedule(lr, 1000)))
-        self.calibrate_state = TrainState.create(
-            apply_fn=self.classifier_model().apply,
-            params=params,
-            # batch_stats=batch_stats,
-            tx=optimizer,
-            losses=[],
         )
 
     @abstractmethod
     def loss(self, params, batch, batch_prior, batch_stats, rng):
         """Loss function for training the diffusion model."""
         pass
-
-    def calibrate_loss(self, params, batch, labels):
-        """Loss function for training the calibrator."""
-        output = self.calibrate_state.apply_fn(
-            {"params": params},
-            batch,
-            # train=True,
-            # mutable=["batch_stats"],
-        )
-
-        loss = optax.softmax_cross_entropy_with_integer_labels(
-            output.squeeze(), labels
-        ).mean()
-        return loss
 
     def predict_weight(self, samples, **kwargs):
         prob = kwargs.pop("prob", False)
@@ -367,7 +282,7 @@ class Model(ABC):
         Keyword Args:
             restart (bool): If True, reinitialise the model before training. Defaults to False.
             batch_size (int): Size of the training batches. Defaults to 128.
-            n_epochs (int): Number of training epochs. Defaults to 1000.
+            epochs (int): Number of training epochs. Defaults to 1000.
             lr (float): Learning rate. Defaults to 1e-3.
         """
         restart = kwargs.get("restart", False)
@@ -375,7 +290,12 @@ class Model(ABC):
         self.ndims = data.shape[-1]
         self.mean = data.mean(axis=0)
         self.std = data.std(axis=0)
-
+        batch_size = kwargs.get("batch_size", 128)
+        data_size = data.shape[0]
+        batch_size = min(batch_size, data_size)
+        kwargs["batch_size"] = batch_size
+        batches_per_epoch = data_size // batch_size
+        kwargs["batches_per_epoch"] = batches_per_epoch
         # data = (data - self.mean) / self.std
 
         if not self.prior:
@@ -384,10 +304,13 @@ class Model(ABC):
             )
         # data = self.chains.sample(200).to_numpy()[..., :-3]
         if (not self.state) | restart:
+            kwargs["target_batches_per_epoch"] = batches_per_epoch
             self._init_state(**kwargs)
         else:
+            kwargs["target_batches_per_epoch"] = batches_per_epoch
             self._init_state(
-                params=self.state.params  # batch_stats=self.state.batch_stats
+                params=self.state.params,  # batch_stats=self.state.batch_stats
+                **kwargs,
             )
         # self._init_state=self._init_state.replace(grads=jax.tree_map(jnp.zeros_like, self._init_state.params))
         # self.state.params.replace(grads=jax.tree_map(jnp.zeros_like, self.state.params))
@@ -402,7 +325,8 @@ class Model(ABC):
             },
             x,
             t,
-            # train=False,
+            train=False,
+            # rngs={"dropout": self.rng},
         )
 
     def calibrate(self, samples_a, samples_b, **kwargs):
@@ -418,20 +342,6 @@ class Model(ABC):
             n_epochs (int): Number of training epochs. Defaults to 1000.
             lr (float): Learning rate. Defaults to 1e-3.
         """
-        restart = kwargs.get("restart", False)
-        self.ndims = samples_a.shape[-1]
-        # data = self.chains.sample(200).to_numpy()[..., :-3]
-        if (not self.calibrate_state) | restart:
-            self._init_calibrate_state(**kwargs)
-        # self._init_state=self._init_state.replace(grads=jax.tree_map(jnp.zeros_like, self._init_state.params))
-        # self.state.params.replace(grads=jax.tree_map(jnp.zeros_like, self.state.params))
-        # self.state.replace(grads=jax.tree_map(jnp.zeros_like, self.state.params))
-        self._train_calibrator(samples_a, samples_b, **kwargs)
-        self._predict_weight = lambda x: self.calibrate_state.apply_fn(
-            {
-                "params": self.calibrate_state.params,
-                # "batch_stats": self.calibrate_state.batch_stats,
-            },
-            x,
-            # train=False,
-        )
+        self.calibrator = ClassifierSamples()
+        self.calibrator.train(samples_a, samples_b, **kwargs)
+        self._predict_weight = lambda x: self.calibrator.predict(x)
