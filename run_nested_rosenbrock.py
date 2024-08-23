@@ -15,7 +15,7 @@ from fusions.integrate import NestedDiffusion, SequentialDiffusion
 
 os.makedirs("plots", exist_ok=True)
 
-dims = 10
+dims = 2
 
 
 class likelihood(object):
@@ -24,8 +24,8 @@ class likelihood(object):
             100.0 * (x[..., 1:] - x[..., :-1] ** 2.0) ** 2.0 + (1 - x[..., :-1]) ** 2.0,
             axis=-1,
         )
-        mask = (x > 5).any(axis=-1)
-        logl[mask] = -np.inf
+        # mask = (x > 5).any(axis=-1)
+        # logl[mask] = np.inf
         return logl
 
     def __call__(self, x):
@@ -38,14 +38,17 @@ class likelihood(object):
         )
 
 
-class prior(object):
-    dim: int = dims
+from distrax import Normal, Uniform
 
-    def rvs(self, size):
-        return np.random.rand(size, dims) * 10 - 5
+prior = Uniform(low=-5.0 * np.ones(dims), high=5.0 * np.ones(dims))
+# class prior(object):
+#     dim: int = dims
 
-    def logpdf(self, x):
-        return np.ones(x.shape[0]) * 1.0
+#     def rvs(self, size):
+#         return np.random.rand(size, dims) * 10 - 5
+
+#     def logpdf(self, x):
+#         return np.ones(x.shape[0]) * 1.0
 
 
 from fusions.network import ScoreApprox
@@ -54,16 +57,16 @@ network = ScoreApprox(n_initial=128, n_hidden=32, n_layers=3, n_fourier_features
 model = CFM
 
 # model = Diffusion
-diffuser = NestedDiffusion(prior=prior(), likelihood=likelihood(), model=model)
+diffuser = NestedDiffusion(prior=prior, likelihood=likelihood(), model=model)
 diffuser.settings.target_eff = 1.0
-diffuser.settings.epoch_factor = 5
+diffuser.settings.epoch_factor = 10
 diffuser.settings.n = 1000
 diffuser.settings.noise = 1e-3
 diffuser.settings.prior_boost = 2
 diffuser.settings.eps = 1e-2
-diffuser.settings.batch_size = 256
-diffuser.settings.restart = False
-diffuser.settings.lr = 1e-2
+diffuser.settings.batch_size = 500
+diffuser.settings.restart = True
+diffuser.settings.lr = 5e-3
 diffuser.score_model = network
 import jax
 
@@ -81,7 +84,7 @@ print(samples.logZ(30).std())
 total_samples = len(samples.compress(200))
 print(f"total samples: {total_samples}")
 size = total_samples * 2
-theta = prior().rvs(size)
+theta = np.asarray(prior._sample_n(jax.random.PRNGKey(0), size))
 # P = TargetModel.posterior(data).rvs(size * 3)
 a = ns.MCMCSamples(theta).plot_2d(np.arange(dims))
 

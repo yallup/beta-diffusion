@@ -67,7 +67,8 @@ class Model(ABC):
         Returns:
             jnp.ndarray: Samples from the prior distribution.
         """
-        return self.prior.rvs(n).reshape(-1, self.ndims)
+        self.rng, step_rng = random.split(self.rng)
+        return self.prior._sample_n(step_rng, n).reshape(-1, self.ndims)
 
     def predict(self, initial_samples, **kwargs):
         """Run the diffusion model on user-provided samples.
@@ -165,8 +166,9 @@ class Model(ABC):
 
         train_size = data.shape[0]
         if prior_samples is None:
+            self.rng, step_rng = random.split(self.rng)
             prior_samples = jnp.array(
-                self.prior.rvs(train_size).reshape(-1, self.ndims)
+                self.prior._sample_n(step_rng, train_size).reshape(-1, self.ndims)
                 # self.prior.rvs(train_size * 100).reshape(-1, self.ndims)
             )
         batch_size = min(batch_size, train_size)
@@ -344,4 +346,5 @@ class Model(ABC):
         """
         self.calibrator = ClassifierSamples()
         self.calibrator.train(samples_a, samples_b, **kwargs)
-        self._predict_weight = lambda x: self.calibrator.predict(x)
+        # self._predict_weight = lambda x: self.calibrator.predict(x).squeeze()
+        # self._guidance_score = jax.grad(self._predict_weight,argnums=0)

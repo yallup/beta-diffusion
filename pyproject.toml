@@ -13,7 +13,7 @@ pytest = "^7.3"
 tqdm = "^4.62.0"
 diffrax = "^0.6.0"
 optax = "^0.2.2"
-
+distrax = "^0.1.5"
 
 # Testing related dependencies - optional
 [tool.poetry.group.test.dependencies]

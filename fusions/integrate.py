@@ -12,10 +12,12 @@ from dataclasses import dataclass, field
 from pickle import dump, load
 
 import anesthetic.termination as term
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 from anesthetic import MCMCSamples, NestedSamples, make_2d_axes, read_chains
 from anesthetic.utils import compress_weights, neff
+from distrax import MultivariateNormalDiag, Normal, Uniform
 from jax import random
 
 # from anesthetic.read.hdf import read_hdf, write_hdf
@@ -30,7 +32,7 @@ from fusions.utils import ellipse, unit_hyperball, unit_hypercube
 @dataclass
 class Point:
     x: np.ndarray
-    latent_x: np.ndarray
+    # latent_x: np.ndarray
     logl: float
     logl_birth: float
     logl_pi: float = field(default=0.0)
@@ -133,51 +135,118 @@ class Integrator(ABC):
         self.stats = Stats()
         self.settings = Settings()
         self.model = kwargs.get("model", CFM)
-        self.dim = prior.dim
+        # self.dim = prior.dim
         self.rng = kwargs.get("rng", random.PRNGKey(0))
+        self.dim = prior.sample(seed=random.PRNGKey(0)).shape[0]
         self.trace = Trace()
         # self.prior = multivariate_normal(
         #     np.zeros(prior.dim), np.eye(prior.dim)
         # )
-        self.latent = multivariate_normal(np.zeros(prior.dim), np.eye(prior.dim))
+        self.latent = MultivariateNormalDiag(
+            loc=np.zeros(self.dim), scale_diag=np.ones(self.dim)
+        )
+        # self.latent = Normal(loc=np.zeros(self.dim), scale=np.ones(self.dim))
+        # self.latent = multivariate_normal(np.zeros(prior.dim), np.eye(prior.dim))
         # self.latent = unit_hyperball(prior.dim)
         # self.latent = self.prior
 
     def sample(self, n, dist, logl_birth=0.0, beta=1.0):
         if isinstance(dist, Model):
-            logging.log(logging.INFO, f"Sampling {n} points")
-            latent_x = dist.prior.rvs(n)
-            x, j = dist.predict(latent_x, jac=True, solution="exact")
-            latent_x = np.asarray(latent_x)
-            latent_pi = self.dist.prior.logpdf(latent_x)
-            x = np.asarray(x)
-            mask = self.likelihood.logpdf(x) > logl_birth
-            x = x[mask]
-            w = np.exp(j[mask] - latent_pi[mask])  # - calibrate_logprob.squeeze()[mask]
-            latent_x = latent_x[mask]
-            # w = np.exp(j - latent_pi)
-        else:
-            x = np.asarray(dist.rvs(n))
-            w = np.ones(n)
-            latent_x = x
-        idx = compress_weights(w.flatten(), ncompress="equal")
-        logging.log(logging.INFO, f"Compressed to {idx.sum()} points")
+            self.rng, sample_key = random.split(self.rng)
+            x0, pi0 = dist.prior._sample_n_and_log_prob(sample_key, n)
+            # pi0 = jnp.sum(pi0, axis=-1)
 
-        idx = np.asarray(idx, dtype=bool)
+            self.rng, step_rng = random.split(self.rng)
+            x1, j = dist.reverse_process(
+                x0,
+                dist._predict,
+                step_rng,
+                solution="exact",
+            )
+            logl = self.likelihood.logpdf(x1) * beta
+            # mask = logl > logl_birth
+            pi1 = jnp.sum(self.prior.log_prob(x1), axis=-1)
+            # pi = j.squeeze() - pi0 - pi1
+            pi = j - pi0 + pi1
+
+            x = x1[~jnp.isinf(pi)]
+            w = pi[~jnp.isinf(pi)]
+
+        else:
+            self.rng, sample_key = random.split(self.rng)
+            x, pi = dist._sample_n_and_log_prob(sample_key, n)
+            w = jnp.sum(pi, axis=-1)
+
+        logl = self.likelihood.logpdf(x)
+        l_idx = logl > logl_birth
+        x = x[l_idx]
+        w = w[l_idx]
+        logl = logl[l_idx]
+        self.rng, compress_key = random.split(self.rng)
+        idx = jnp.log(Uniform()._sample_n(compress_key, w.shape[0])) <= w - w.max()
+        # idx = compress_weights(w.flatten(), ncompress="equal")
+        # idx = np.asarray(idx, dtype=bool)
         logl = self.likelihood.logpdf(x) * beta
-        self.stats.nlike += n
+        self.stats.nlike += l_idx.shape[0]
         logl_birth = np.ones_like(logl) * logl_birth
         points = [
             Point(
                 x[idx][i],
-                latent_x[idx][i],
                 logl[idx][i],
                 logl_birth[idx][i],
-                # logl_pi=log_pi[idx][i],
             )
             for i in range(idx.sum())
         ]
         return points
+
+    # def sample(self, n, dist, logl_birth=0.0, beta=1.0):
+
+    #     if isinstance(dist, Model):
+    #         self.rng, sample_key = random.split(self.rng)
+    #         x0, pi0 = dist.prior._sample_n_and_log_prob(sample_key, n)
+    #         pi0 = jnp.sum(pi0, axis=-1)
+    #         # logging.log(logging.INFO, f"Sampling {n} points")
+    #         # latent_x = dist.prior.rvs(n)
+    #         # x, j = dist.predict(latent_x, jac=True, solution="exact")
+    #         self.rng, step_rng = random.split(self.rng)
+    #         x1, j = dist.reverse_process(
+    #             x0,
+    #             dist._predict,
+    #             step_rng,
+    #             solution="exact",
+    #         )
+
+    #         pi1 = jnp.sum(self.prior.log_prob(x1), axis=-1)
+    #         w = j.squeeze() - pi0 + pi1
+    #         # latent_x = np.asarray(latent_x)
+    #         # latent_pi = dist.prior.logpdf(latent_x)
+    #         # x = np.asarray(x).squeeze()
+    #         x = x1
+    #         pi = jnp.exp(j.squeeze() - pi0 + pi1)
+    #         # theta =np.asarray([xi.x for xi in self.live])
+    #         # # a = MCMCSamples(theta.squeeze()).plot_2d()
+    #         # psi, psi_j = dist.reverse_process(
+    #         #     theta,
+    #         #     dist._predict,
+    #         #     step_rng,
+    #         #     solution="exact",
+    #         #     t0=1.0,t1=0.0, dt0=-1e-2
+    #         # )
+    #         # a = MCMCSamples(psi.squeeze()).plot_2d()
+    #         # MCMCSamples(latent_x).plot_2d(a)
+    #         # plt.savefig("plots/latent.pdf")
+    #         # theta =np.asarray([xi.x for xi in self.live])
+    #         # w = np.exp(latent_pi)
+    #         # w = np.exp(j.squeeze())
+    #         # w = np.ones_like(j)
+    #     else:
+    #         self.rng, sample_key = random.split(self.rng)
+    #         x, pi = dist._sample_n_and_log_prob(sample_key, n)
+    #         pi = jnp.sum(pi, axis=-1)
+    #     #     # x = np.asarray(dist.rvs(n))
+    #     #     w = np.ones(n)
+    #     #     latent_x = x
+    #     return np.asarray(x), np.asarray(pi)
 
     def stash(self, points, n, drop=False):
         live = sorted(points, key=lambda lp: lp.logl, reverse=True)
@@ -226,17 +295,68 @@ class Integrator(ABC):
 
 
 class NestedDiffusion(Integrator):
-    def sample_constrained(self, n, dist, constraint, efficiency=0.1, **kwargs):
+    def sample_constrained(self, n, dist, constraint, efficiency=1.0, **kwargs):
         success = []
         trials = 0
         while len(success) < n:
             batch_success = []
-            pi = self.sample(n, dist, constraint, **kwargs)
-            batch_success += [p for p in pi if p.logl > constraint]
+            pi = self.sample(int(n / efficiency), dist, constraint, **kwargs)
+            batch_success += pi  # [p for p in pi if p.logl > constraint]
             success += batch_success
-            trials += len(pi)
-        eff = len(success) / trials
+            trials += int(n / efficiency)
+        eff = np.round(len(success) / trials, decimals=3)
         return eff > efficiency, eff, success
+
+    # def sample_constrained(
+    #     self, n, dist, constraint, efficiency=0.1, **kwargs
+    # ):
+    #     success = 0
+    #     x = []
+    #     w = []
+    #     l = []
+    #     pbar = tqdm(total=n)
+    #     while success < n:
+    #         xi, wi = self.sample(n, dist, **kwargs)
+    #         self.stats.nlike += n
+    #         li = self.likelihood.logpdf(xi)
+    #         x.append(xi)
+    #         w.append(wi)
+    #         l.append(li)
+    #         coords = np.concatenate(x)
+    #         weights = np.concatenate(w)
+    #         like = np.concatenate(l)
+    #         l_mask = like > constraint
+    #         l_mask = np.asarray(l_mask, dtype="bool")
+    #         idx = compress_weights(
+    #             weights[l_mask].flatten(), ncompress="equal"
+    #         )
+    #         # idx = compress_weights(weights[l_mask].flatten())
+
+    #         # idx = np.ones(l_mask.sum())
+    #         # w_mask = np.asarray(idx, dtype=bool)
+
+    #         logger.info(f"Sampled {n} new points, ess is: {idx.sum()}")
+    #         pbar.update(idx.sum() - success)
+    #         success = idx.sum()
+    #         pbar.close()
+    #     logl_birth = np.ones(success) * constraint
+
+    #     points = [
+    #         # Point(
+    #         #     coords[l_mask][w_mask][i],
+    #         #     like[l_mask][w_mask][i],
+    #         #     logl_birth[i],
+    #         #     # logl_pi=log_pi[idx][i],
+    #         # )
+    #         Point(
+    #             np.repeat(coords[l_mask], idx, axis=0)[i],
+    #             np.repeat(like[l_mask], idx, axis=0)[i],
+    #             logl_birth[i],
+    #             # logl_pi=log_pi[idx][i],
+    #         )
+    #         for i in range(success)
+    #     ]
+    #     return points, l_mask.mean(), idx.mean()
 
     def train_diffuser(self, dist, points, prior_samples=None):
         dist.train(
@@ -253,7 +373,10 @@ class NestedDiffusion(Integrator):
 
     def run(self):
         n = self.settings.n
-        live = self.sample(n * self.settings.prior_boost, self.prior, self.logzero)
+        live = self.sample(n * self.settings.prior_boost, self.prior, self.logzero)  #
+        # live, _, _ = self.sample_constrained(
+        #     n * self.settings.prior_boost, self.prior, self.logzero
+        # )
         step = 0
         logger.info("Done sampling prior")
         live, contour = self.stash(live, n // 2, drop=False)
@@ -269,6 +392,13 @@ class NestedDiffusion(Integrator):
             self.live = live
             self.dist = self.train_diffuser(self.dist, live)
             x = self.dist.rvs(len(live))
+            self.dist.calibrate(
+                x,
+                jnp.asarray([xi.x for xi in live]),
+                batch_size=self.settings.batch_size,
+                lr=self.settings.lr,
+                epochs=int(50 * self.settings.epoch_factor),
+            )
 
             self.trace.losses[step] = self.dist.trace.losses
             self.trace.lr[step] = self.dist.trace.lr
@@ -279,12 +409,19 @@ class NestedDiffusion(Integrator):
                 contour,
                 efficiency=self.settings.target_eff,
             )
+
+            # points, eff, _ = self.sample_constrained(
+            #     n // 2,
+            #     self.dist,
+            #     contour,
+            #     efficiency=self.settings.target_eff,
+            # )
             logger.info(f"Efficiency at: {eff}, using previous diffusion")
 
             self.trace.live[step] = live
             self.trace.accepted_live[step] = points
             self.trace.flow[step] = x
-            self.trace.prior[step] = self.dist.prior.rvs(n)
+            self.trace.prior[step] = self.dist.prior._sample_n(self.rng, n)
             live = live + points
             live, contour = self.stash(live, n // 2, drop=False)
 

@@ -104,7 +104,7 @@ class CFM(Model):
         # f(initial_samples[0], eps[0])
         # solver_exact(0.0, (initial_samples[0], initial_samples[0]), eps[0])
         yt, jt = vmap(f)(initial_samples, eps)
-        return yt, jt
+        return yt.squeeze(), jt.squeeze()
 
     @partial(jit, static_argnums=[0])
     def loss(self, params, batch, batch_prior, rng):
@@ -130,7 +130,7 @@ class CFM(Model):
         # batch = batch[idx[0]]
         # batch_prior = batch_prior[idx[1]]
         t = random.uniform(step_rng, (N_batch, 1))
-        t = jnp.power(t, 1.0 / 2.0)
+        t = jnp.power(t, 2.0 / 3.0)
         x0 = batch_prior
         x1 = batch
         noise = random.normal(step_rng, (N_batch, self.ndims))

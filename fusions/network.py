@@ -163,13 +163,14 @@ class ScoreApprox(nn.Module):
         #     axis=-1,
         # )
         # z= nn.BatchNorm(use_running_average=not train)(x)
-        y = jnp.concatenate([x, t], axis=-1)
-        y = nn.Dense(self.n_initial)(y)
+        # y = jnp.concatenate([x, t], axis=-1)
+        y = nn.Dense(self.n_initial)(x)
         # y = nn.Dropout(0.1)(y, deterministic=not train)
         # y = nn.BatchNorm(use_running_average=not train)(y)
         y = nn.silu(y)
         # y = nn.gelu(y)
         for i in range(self.n_layers):
+            y = jnp.concatenate([y, t], axis=-1)
             y = nn.Dense(self.n_hidden)(y)
             # y = nn.Dropout(0.1)(y, deterministic=not train)
             # y = nn.BatchNorm(use_running_average=not train)(y)
