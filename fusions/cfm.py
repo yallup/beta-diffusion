@@ -1,9 +1,13 @@
 import math
 from functools import partial
 
+import blackjax
 import diffrax as dfx
+import jax
 import jax.numpy as jnp
 import jax.random as random
+from blackjax import irmh
+from blackjax.mcmc import hmc, mala
 from diffrax import SaveAt
 from jax import disable_jit, grad, jit, pmap, vjp, vmap
 
@@ -15,6 +19,50 @@ from fusions.model import Model
 
 class CFM(Model):
     """Continuous Flow Matching."""
+
+    # @partial(jit, static_argnums=[0,2])
+    def rmh(self, initial_samples, score, rng):
+        """rmh on the score"""
+
+        # def potential(xi):
+        #     return reverse_process(xi, score, rng)
+
+        kernel = irmh.build_kernel()
+
+        def logdensity_fn(samples):
+            x, j = self.reverse_process(samples, score, rng)
+            return x, j + self.prior.log_prob(samples)
+            # return score(state.position)
+
+        def proposal_distribution(key, n):
+            return self.prior._sample_n_and_log_prob(key, n)
+
+        def body(carry, xi):
+            return kernel(key, state, logdensity_fn, proposal_distribution)
+
+        def step_fn(key, state, logdensity):
+            # x, j = self.reverse_process(state.position, score, key)
+            proposal_distribution = lambda key: self.prior.sample(seed=key)
+            # proposal_distribution = self.prior.sample(seed=key)
+
+            def proposal_logdensity_fn(state):
+                return self.prior.log_pdf(state)
+
+            return kernel(
+                key,
+                state,
+                logdensity,
+                proposal_distribution,
+                proposal_logdensity_fn,
+            )
+
+        def one_step(key, state):
+            return step_fn(key, state, logdensity_fn(state))
+
+        states = blackjax.rmh.init(initial_samples, logdensity_fn=logdensity_fn)
+        jax.vmap(step_fn)(random.split(rng, initial_samples.shape[0]), states)
+
+        return initial_samples
 
     @partial(jit, static_argnums=[0, 2, 4, 5])
     def reverse_process(
@@ -82,8 +130,8 @@ class CFM(Model):
                 term = dfx.ODETerm(solver_none)
             # term = dfx.ODETerm(score_args_exact)
             # solver = dfx.Heun()
-            solver = dfx.Dopri5()
-            # solver = dfx.Dopri8()
+            # solver = dfx.Dopri5()
+            solver = dfx.Dopri8()
             # solver = dfx.Tsit5()
 
             # with disable_jit():
@@ -95,8 +143,8 @@ class CFM(Model):
                 dt0,
                 conditions,
                 args=eps,
-                saveat=SaveAt(t1=True, ts=ts),
-                stepsize_controller=dfx.PIDController(1e-4, 1e-4),
+                # saveat=SaveAt(t1=True, ts=ts),
+                stepsize_controller=dfx.PIDController(1e-5, 1e-5),
             )
             return sol.ys
 
@@ -177,9 +225,9 @@ class CFM(Model):
                 term = dfx.ODETerm(solver_none)
             # term = dfx.ODETerm(score_args_exact)
             # solver = dfx.Heun()
-            solver = dfx.Dopri5()
+            # solver = dfx.Dopri5()
             # solver = dfx.Dopri8()
-            # solver = dfx.Tsit5()
+            solver = dfx.Tsit5()
 
             # with disable_jit():
             sol = dfx.diffeqsolve(
@@ -190,8 +238,9 @@ class CFM(Model):
                 dt0,
                 conditions,
                 args=eps,
-                saveat=SaveAt(t1=True, ts=ts),
-                stepsize_controller=dfx.PIDController(1e-4, 1e-4),
+                # saveat=SaveAt(t1=True, ts=ts),
+                stepsize_controller=dfx.PIDController(1e-5, 1e-5),
+                # max_steps=10000,
             )
             return sol.ys
 
@@ -226,12 +275,13 @@ class CFM(Model):
         # batch = batch[idx[0]]
         # batch_prior = batch_prior[idx[1]]
         t = random.uniform(step_rng, (N_batch, 1))
-        t = jnp.power(t, 1.0 / 2.0)
+        t = jnp.power(t, 1.0 / 1.0)
         x0 = batch_prior
         x1 = batch
         noise = random.normal(step_rng, (N_batch, self.ndims))
         # psi_0 = t * batch + (1 - t) * batch_prior + sigma_noise * noise
-        psi_0 = t * batch + (1 - t) * batch_prior + self.noise * noise
+        # psi_0 = t * batch + (1 - t) * batch_prior + self.noise * noise
+        psi_0 = t * (batch) + (1 - t) * (batch_prior + self.noise * noise)
         # psi_0 = t * batch + (1 - t) * batch_prior
 
         output = self.state.apply_fn(

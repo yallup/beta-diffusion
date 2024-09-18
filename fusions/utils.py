@@ -1,3 +1,6 @@
+import distrax
+import jax
+import jax.numpy as jnp
 import numpy as np
 from numpy.linalg import svd
 
@@ -42,21 +45,31 @@ class unit_hyperball(object):
 
 
 class ellipse(object):
-    def __init__(self, points):
-        self.points = np.asarray([xi.x for xi in points])
-        # self.points = points
-        self.dim = self.points.shape[1]
-        self.mean = np.mean(self.points, axis=0)
-        # svd(self.points)
-        # self.cov = svd(self.points-self.mean)[2]
-        self.cov = np.cov(self.points, rowvar=False)
-        self.svd = svd(self.cov)
-        _, singular_values, singular_vectors = np.linalg.svd(self.points - self.mean)
-        self.transform = singular_vectors.T @ np.diag(singular_values)
+    def __init__(self, loc, cov):
+        self.dim = loc.shape[0]
+        self.mean = loc
+        self.cov = cov
+        self.cov_inv = jnp.linalg.inv(cov.T)
 
-    # def rvs(self, size):
-    #     x = np.random.randn(size, self.dim)
-    #     return x @ self.cov.T + self.mean
+    def _sample_n_and_log_prob(self, seed, n):
+        x, pi = distrax.MultivariateNormalDiag(
+            jnp.zeros(self.dim), jnp.ones(self.dim)
+        )._sample_n_and_log_prob(seed, n)
+        # x, pi = distrax.MultivariateNormalFullCovariance(
+        #     self.mean, self.cov
+        # )._sample_n_and_log_prob(seed, n)
+        r, pi = distrax.Uniform(0, 1)._sample_n_and_log_prob(seed, n)
+        r = r ** (1 / self.dim)
+        x = (
+            x / jnp.linalg.norm(x, axis=1)[:, None] * r[:, None]
+        ) @ self.cov + self.mean
+        return x, pi
+
+    def _sample_n(self, seed, n):
+        return self._sample_n_and_log_prob(seed, n)[0]
+
+    def log_prob(self, x):
+        return jnp.zeros(x.shape[0])
 
     def rvs(self, size):
         x = np.random.randn(size, self.dim)
@@ -64,12 +77,6 @@ class ellipse(object):
         return (x / np.linalg.norm(x, axis=1)[:, None] * r[:, None]) @ np.linalg.inv(
             self.cov.T
         ) + self.mean
-        # Scale and rotate the points
-        # eigenvalues, eigenvectors = np.linalg.eigh(self.cov)
-        # points = points @ (eigenvectors * np.sqrt(eigenvalues))
-
-        # Shift the points to have the desired mean
-        # return points + self.mean
 
     def logpdf(self, x):
         return multivariate_normal(self.mean, self.cov).logpdf(x)

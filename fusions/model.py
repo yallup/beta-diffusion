@@ -169,7 +169,7 @@ class Model(ABC):
         if prior_samples is None:
             self.rng, step_rng = random.split(self.rng)
             prior_samples = jnp.array(
-                self.prior._sample_n(step_rng, train_size).reshape(-1, self.ndims)
+                self.prior._sample_n(step_rng, train_size * 500).reshape(-1, self.ndims)
                 # self.prior.rvs(train_size * 100).reshape(-1, self.ndims)
             )
         batch_size = min(batch_size, train_size)
@@ -181,7 +181,7 @@ class Model(ABC):
             epoch_losses = []
             for _ in range(batches_per_epoch):
                 self.rng, step_rng = random.split(self.rng)
-                perm, perm_prior = map.sample(batch_size)
+                perm_prior, perm = map.sample(batch_size)
                 batch = data[perm]
                 batch_label = prior_samples[perm_prior]
                 loss, self.state = update_step(self.state, batch, batch_label, step_rng)
@@ -210,7 +210,7 @@ class Model(ABC):
         target_batches_per_epoch = kwargs.pop("target_batches_per_epoch")
         warmup_fraction = kwargs.get("warmup_fraction", 0.05)
         cold_fraction = kwargs.get("cold_fraction", 0.05)
-        cold_lr = kwargs.get("cold_lr", 1e-3)
+        cold_lr = kwargs.get("cold_lr", 1e-1)
         epochs = kwargs.pop("epochs")
 
         self.schedule = optax.warmup_cosine_decay_schedule(
@@ -289,7 +289,7 @@ class Model(ABC):
             lr (float): Learning rate. Defaults to 1e-3.
         """
         restart = kwargs.get("restart", False)
-        self.noise = kwargs.get("noise", 1e-3)
+        # self.noise = kwargs.get("noise", 1e-3)
         self.ndims = data.shape[-1]
         self.mean = data.mean(axis=0)
         self.std = data.std(axis=0)

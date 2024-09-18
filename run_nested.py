@@ -102,7 +102,7 @@ diffuser = NestedDiffusion(
     prior=TargetModel.prior(), likelihood=likelihood(), model=model
 )
 diffuser.settings.target_eff = 1.0
-diffuser.settings.epoch_factor = 10
+diffuser.settings.epochs = 10
 diffuser.settings.n = 3000
 diffuser.settings.noise = 1e-4
 diffuser.settings.prior_boost = 5

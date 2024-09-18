@@ -11,11 +11,11 @@ from scipy.stats import multivariate_normal, norm, uniform
 
 from fusions.cfm import CFM
 from fusions.diffusion import Diffusion
-from fusions.integrate import NestedDiffusion, SequentialDiffusion
+from fusions.integrate import NestedDiffusion
 
 os.makedirs("plots", exist_ok=True)
 
-dims = 2
+dims = 20
 
 
 class likelihood(object):
@@ -77,18 +77,18 @@ prior = Uniform(low=-5.0 * np.ones(dims), high=5.0 * np.ones(dims))
 
 from fusions.network import ScoreApprox
 
-network = ScoreApprox(n_initial=128, n_hidden=32, n_layers=3, n_fourier_features=4)
+network = ScoreApprox(n_initial=256, n_hidden=32, n_layers=3, n_fourier_features=4)
 model = CFM
 
 # model = Diffusion
 diffuser = NestedDiffusion(prior=prior, likelihood=likelihood(), model=model)
-diffuser.settings.target_eff = 1.0
-diffuser.settings.epoch_factor = 10
+diffuser.settings.target_eff = 0.5
+diffuser.settings.epochs = 500
 diffuser.settings.n = 1000
 diffuser.settings.noise = 1e-3
 diffuser.settings.prior_boost = 2
 diffuser.settings.eps = 1e-2
-diffuser.settings.batch_size = 500
+diffuser.settings.batch_size = 256
 diffuser.settings.restart = True
 diffuser.settings.lr = 1e-2
 diffuser.score_model = network
@@ -106,14 +106,14 @@ print(f"numerical estimation: {zs.mean():.2f} +- {zs.std():.2f}")
 print(samples.logZ())
 print(samples.logZ(30).std())
 
-total_samples = len(samples.compress(200))
+total_samples = len(samples.compress())
 print(f"total samples: {total_samples}")
 size = total_samples * 2
 theta = np.asarray(prior._sample_n(jax.random.PRNGKey(0), size))
 # P = TargetModel.posterior(data).rvs(size * 3)
-a = ns.MCMCSamples(theta).plot_2d(np.arange(dims))
+# a = ns.MCMCSamples(theta).plot_2d(np.arange(dims)[:5])
 
-f, a = ns.make_2d_axes(np.arange(dims))
+f, a = ns.make_2d_axes(np.arange(dims)[:5])
 # ns.MCMCSamples(theta).plot_2d(a, alpha=0.3, label="Prior")
 # ns.MCMCSamples(P).plot_2d(a, alpha=0.3, label="Analytic")
 samples.plot_2d(a, label="NestedDiffusion")
