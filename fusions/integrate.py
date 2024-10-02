@@ -34,6 +34,7 @@ from jax.lax import scan, while_loop
 # from anesthetic.read.hdf import read_hdf, write_hdf
 from scipy.special import logsumexp
 from scipy.stats import multivariate_normal
+from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
 
 from fusions.model import Model
@@ -353,6 +354,13 @@ class Integrator(ABC):
             open(os.path.join(self.settings.dirname, filename) + ".pkl", "wb"),
         )
 
+    def infer_noise(self, points):
+        nn = NearestNeighbors(n_neighbors=2).fit(points)
+        dist, idx = nn.kneighbors(points)
+        noise = dist[..., -1].mean()
+        logger.info(f"Noise at {noise}")
+        return noise
+
 
 class NestedDiffusion(Integrator):
     def sample_constrained(self, n, dist, constraint, efficiency=1.0, **kwargs):
@@ -458,7 +466,7 @@ class NestedDiffusion(Integrator):
             live_as_array = np.asarray([xi.x for xi in live])
             # ellipse(particles_means(live_as_array), particles_covariance_matrix(live_as_array))
             # ellipse(particles_means(live_as_array), particles_covariance_matrix(live_as_array))._sample_n_and_log_prob(self.rng,100)
-
+            noise = self.infer_noise(live_as_array)
             self.dist = self.model(
                 MultivariateNormalFullCovariance(
                     particles_means(live_as_array),

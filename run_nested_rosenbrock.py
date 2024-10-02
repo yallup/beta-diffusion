@@ -15,7 +15,7 @@ from fusions.integrate import NestedDiffusion
 
 os.makedirs("plots", exist_ok=True)
 
-dims = 20
+dims = 4
 
 
 class likelihood(object):
